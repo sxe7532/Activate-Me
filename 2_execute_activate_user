@@ -1,0 +1,135 @@
+import requests
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
+from googleapiclient.errors import HttpError
+import hashlib
+import hmac
+from urllib import parse as urlparse
+import time
+import json
+
+SERVICE_ACCOUNT_FILE = {}
+
+SCOPES = [
+    'https://www.googleapis.com/auth/admin.directory.user',
+]
+
+SLACK_CHANNELS = ["xxx", "xxx", "xxx"]
+
+helper_text = """
+Wrong Syntax.
+
+Correct Syntax: `/activate <email>`
+"""
+
+user_notification = '''
+Hello,
+
+IT has re-activated your Auth0 email account after being alerted it was suspended for spamming. If you are still locked out of your account or suspect this was malicious, please submit an URGENT ticket with us immediately at http://it.help.company.net/."
+
+Cheers,
+The IT team :blobnerd:
+'''
+
+def lambda_handler(event, context):
+    
+    data_from_slack = event["Records"][0]["Sns"]["Message"]
+    
+    json_loaded_data = json.loads(data_from_slack)
+    
+    response_url = json_loaded_data["response_url"]
+    channel_id = json_loaded_data["channel_id"]
+    search_string = json_loaded_data["text"]
+    invoker = json_loaded_data["user_name"]
+    
+    search_handler(channel_id, invoker, search_string, response_url)
+ 
+def search_handler(channel_id, invoker, email, response_url):
+    
+    response_json = {}
+
+    success = activate_google(email)
+    
+    if success:
+        message = f"{email} was activated by {invoker}. :white_check_mark:"
+
+        notify_user(email)
+    else:
+        message = f"Activation for {email} invoked by {invoker} but failed. :sadparrot:"
+
+    data = {
+        'token': "xxx",
+        'channel': channel_id,
+        'text': message
+    }
+
+    requests.post(url='https://slack.com/api/chat.postMessage', data=data)
+
+    response_json["text"] = message
+    response = requests.post( 
+        response_url, data=json.dumps(response_json),
+        headers={'Content-Type': 'application/json'}
+        )
+
+
+def activate_google(email):
+    creds = service_account.Credentials.from_service_account_info(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    directory = build('admin', 'directory_v1',
+                      credentials=creds.with_subject(SERVICE_ACCOUNT_FILE['assumed_subject_email']))
+
+    info = {
+        "suspended": False,
+    }
+
+    try:
+        directory.users().update(userKey=email, body=info).execute()
+        return 1
+    except HttpError as e:
+        if e._get_reason():
+            error = f"Error: {e._get_reason()}"
+            print(error)
+    return 0
+
+
+def notify_user(email):
+    api_data = {
+        "token": "xxx",
+        "email": email
+    }
+
+    api_request_response = requests.post("https://slack.com/api/users.lookupByEmail", data=api_data)
+
+    users_profile = api_request_response.json()
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": ":email: *You have a message from IT* :incoming_envelope: "
+            }
+        },
+        {
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": user_notification
+            }
+        }
+    ]
+
+    blocks = json.dumps(blocks)
+
+    data = {
+        'token': "xxx",
+        'channel': users_profile['user']['id'],
+        'blocks': blocks,
+    }
+
+    requests.post(url='https://slack.com/api/chat.postMessage', data=data)
+
+    return
+
